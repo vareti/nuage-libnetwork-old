@@ -123,17 +123,17 @@ func (nuageipam *NuageIPAMDriver) RequestPool(w http.ResponseWriter, req *http.R
 	}
 	networkParams.SubnetCIDR = r.Pool
 
-	dockerResponse := nuageApi.DockerChanRequest(nuageipam.dockerChannel,
-		nuageApi.DockerCheckNetworkListEvent, networkParams)
-	networkOverlaps := dockerResponse.DockerData.(bool)
-	if dockerResponse.Error != nil {
-		utils.HandleHTTPError(w, "Checking existing networks", dockerResponse.Error)
-		return
-	}
-	if networkOverlaps {
-		utils.HandleHTTPError(w, "Checking existing networks", fmt.Errorf("Network options and subnet overlap with existing network"))
-		return
-	}
+	//dockerResponse := nuageApi.DockerChanRequest(nuageipam.dockerChannel,
+	//	nuageApi.DockerCheckNetworkListEvent, networkParams)
+	//networkOverlaps := dockerResponse.DockerData.(bool)
+	//if dockerResponse.Error != nil {
+	//	utils.HandleHTTPError(w, "Checking existing networks", dockerResponse.Error)
+	//	return
+	//}
+	//if networkOverlaps {
+	//	utils.HandleHTTPError(w, "Checking existing networks", fmt.Errorf("Network options and subnet overlap with existing network"))
+	//	return
+	//}
 
 	vsdResp := nuageApi.VSDChanRequest(nuageipam.vsdChannel,
 		nuageApi.VSDAddObjectsEvent, networkParams)
@@ -142,7 +142,7 @@ func (nuageipam *NuageIPAMDriver) RequestPool(w http.ResponseWriter, req *http.R
 		return
 	}
 
-	poolID := nuageConfig.MD5Hash(networkParams) + "-" + utils.GenerateID(true)[:10]
+	poolID := nuageConfig.MD5Hash(networkParams)
 	resp := &ipam.RequestPoolResponse{
 		PoolID: poolID,
 		Pool:   r.Pool,
@@ -196,7 +196,7 @@ func (nuageipam *NuageIPAMDriver) RequestAddress(w http.ResponseWriter, req *htt
 
 	var resp *ipam.RequestAddressResponse
 	log.Infof("RequestAddress payload is %+v", *r)
-	if reqType, ok := r.Options[ipamapi.RequestAddressType]; ok && reqType == "com.docker.network.gateway" {
+	if reqType, ok := r.Options[ipamapi.RequestAddressType]; (ok && reqType == "com.docker.network.gateway") || r.Address != "" {
 		resp, err = nuageipam.GateWayAddressRequest(r)
 		if err != nil {
 			utils.HandleHTTPError(w, "Requesting gateway address", err)

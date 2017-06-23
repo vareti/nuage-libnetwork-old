@@ -80,7 +80,8 @@ cat <<EOF > $TMPDIR/config.json
 EOF
 
 sudo docker plugin create ${PLUGIN_NAME} ${TMPDIR}
-sudo docker plugin push ${PLUGIN_NAME}
-sudo docker plugin rm ${PLUGIN_NAME}
-sudo docker plugin install --alias nuage ${PLUGIN_NAME}
+sudo docker plugin enable ${PLUGIN_NAME}
+#sudo docker plugin push ${PLUGIN_NAME}
+#sudo docker plugin rm ${PLUGIN_NAME}
+#sudo docker plugin install --alias nuage ${PLUGIN_NAME}
 sudo rm -rf ${TMPDIR}
