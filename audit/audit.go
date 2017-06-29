@@ -20,7 +20,7 @@ package audit
 import (
 	log "github.com/Sirupsen/logrus"
 	nuageApi "github.com/nuagenetworks/nuage-libnetwork/api"
-	"time"
+	//"time"
 )
 
 //NuageAudit contains channels for audit
@@ -55,7 +55,7 @@ func (audit *NuageAudit) Start() {
 func (audit *NuageAudit) periodicAudit() {
 	audit.runAudit()
 	//run it for every 30 seconds from now
-	time.AfterFunc(30*time.Second, audit.periodicAudit)
+	//time.AfterFunc(30*time.Second, audit.periodicAudit)
 }
 
 // runs audit now. Can be invoked using SIGUSR2
