@@ -43,7 +43,7 @@ func NewNuageAudit(channels *nuageApi.NuageLibNetworkChannels) *NuageAudit {
 //Start starts the audit process
 func (audit *NuageAudit) Start() {
 	//run it onnce at beginning
-	audit.periodicAudit()
+	//audit.periodicAudit()
 
 	select {
 	case <-audit.stop:

@@ -66,7 +66,17 @@ type NuageVSDClient struct {
 	vsdChannel               chan *nuageApi.VSDEvent
 	vrsChannel               chan *nuageApi.VRSEvent
 	dockerChannel            chan *nuageApi.DockerEvent
+	etcdChannel              chan *nuageApi.EtcdEvent
 	infiniteUpdateRetryQueue chan nuageConfig.NuageEventMetadata
+	pluginVersion            string
+}
+
+type storeValue struct {
+	FakeUUID string
+	IntfName string
+	IntfMAC  string
+	VSDID    string
+	Mask     string
 }
 
 // NewNuageVSDClient factory method for VSD client
@@ -82,12 +92,14 @@ func NewNuageVSDClient(config *nuageConfig.NuageLibNetworkConfig, channels *nuag
 	nuagevsd.vrsChannel = channels.VRSChannel
 	nuagevsd.vsdChannel = channels.VSDChannel
 	nuagevsd.dockerChannel = channels.DockerChannel
+	nuagevsd.etcdChannel = channels.EtcdChannel
 	nuagevsd.ipToVSDContainerMap = utils.NewHashMap()
 	nuagevsd.nwParamsToVSDObjectsMap = utils.NewHashMap()
 	nuagevsd.intfSeqNumTable = utils.NewHashMap()
 	nuagevsd.connectionRetry = make(chan bool)
 	nuagevsd.connectionActive = make(chan bool)
 	nuagevsd.infiniteUpdateRetryQueue = make(chan nuageConfig.NuageEventMetadata)
+	nuagevsd.pluginVersion = config.PluginVersion
 	nuagevsd.hypervisorID, err = getHostExternalID()
 	if err != nil {
 		log.Errorf("Getting external host id failed with error: %v", err)
@@ -152,26 +164,13 @@ func (nuagevsd *NuageVSDClient) DeleteVSDObjects(vsdReq *nuageConfig.NuageNetwor
 	return nil
 }
 
-//CreateVSDContainer creates new container on VSD under the given subnet
-func (nuagevsd *NuageVSDClient) CreateVSDContainer(vsdReq nuageConfig.NuageEventMetadata) (string, error) {
-	resp, ok := nuagevsd.nwParamsToVSDObjectsMap.Read(vsdReq.NetworkParams.String())
-	if !ok {
-		return "", fmt.Errorf("Could not find network %s info in cache", vsdReq.NetworkParams.String())
-	}
-	subnet := resp.(*vspk.Subnet)
-
-	containerInfo, err := nuagevsd.populateContainerInfo()
-	if err != nil {
-		log.Errorf("Populating container info failed with error: %v", err)
-		return "", err
-	}
-
+func (nuagevsd *NuageVSDClient) createVSDContainerStruct(containerInfo map[string]string, IPAddress, subnetID string) *vspk.Container {
 	//VSD container interface
 	containerInterface := vspk.NewContainerInterface()
 	containerInterface.Name = containerInfo[nuageConfig.BridgePortKey]
 	containerInterface.MAC = containerInfo[nuageConfig.MACKey]
-	containerInterface.IPAddress = vsdReq.IPAddress
-	containerInterface.AttachedNetworkID = subnet.ID
+	containerInterface.IPAddress = IPAddress
+	containerInterface.AttachedNetworkID = subnetID
 	interfaceList := make([]interface{}, 1)
 	interfaceList[0] = containerInterface
 
@@ -182,6 +181,60 @@ func (nuagevsd *NuageVSDClient) CreateVSDContainer(vsdReq nuageConfig.NuageEvent
 	container.Interfaces = interfaceList
 	container.ExternalID = nuagevsd.hypervisorID
 
+	return container
+}
+
+func (nuagevsd *NuageVSDClient) fetchContainerDataEtcd(vsdReq nuageConfig.NuageEventMetadata) (string, error) {
+	resp, ok := nuagevsd.nwParamsToVSDObjectsMap.Read(vsdReq.NetworkParams.String())
+	if !ok {
+		return "", fmt.Errorf("Could not find network %s info in cache", vsdReq.NetworkParams.String())
+	}
+	subnet := resp.(*vspk.Subnet)
+	etcdStoreInfo := nuageConfig.NuageEtcdParams{
+		Key: nuageConfig.MD5Hash(vsdReq.NetworkParams) + "/" + vsdReq.IPAddress,
+	}
+
+	etcdResp := nuageApi.EtcdChanRequest(nuagevsd.etcdChannel, nuageApi.EtcdGetEvent, etcdStoreInfo)
+	if etcdResp.Error != nil {
+		log.Errorf("Fetching data from etcd for IP %s failed with error: %v", vsdReq.IPAddress, etcdResp.Error)
+		return "", etcdResp.Error
+	}
+
+	value := &storeValue{}
+	err := json.Unmarshal([]byte(etcdResp.EtcdData.(string)), value)
+	if err != nil {
+		log.Errorf("Unmarshalling json data into struct failed with error: %v", err)
+		return "", err
+	}
+	containerInfo := make(map[string]string)
+	containerInfo[nuageConfig.BridgePortKey] = value.IntfName
+	containerInfo[nuageConfig.MACKey] = value.IntfMAC
+	containerInfo[nuageConfig.UUIDKey] = value.FakeUUID
+	container := nuagevsd.createVSDContainerStruct(containerInfo, vsdReq.IPAddress, subnet.ID)
+	container.ID = value.VSDID
+	log.Debugf("Container ID = %s created on vsd with ip address = %s", container.UUID, vsdReq.IPAddress)
+	nuagevsd.ipToVSDContainerMap.Write(vsdReq.NetworkParams.String()+"-"+vsdReq.IPAddress,
+		container)
+	return vsdReq.IPAddress + "/" + value.Mask, nil
+}
+
+func (nuagevsd *NuageVSDClient) createVSDContainer(vsdReq nuageConfig.NuageEventMetadata) (string, error) {
+	resp, ok := nuagevsd.nwParamsToVSDObjectsMap.Read(vsdReq.NetworkParams.String())
+	if !ok {
+		return "", fmt.Errorf("Could not find network %s info in cache", vsdReq.NetworkParams.String())
+	}
+	subnet := resp.(*vspk.Subnet)
+	containerInfo := make(map[string]string)
+	var err error
+
+	containerInfo, err = nuagevsd.populateContainerInfo()
+	if err != nil {
+		log.Errorf("Populating container info failed with error: %v", err)
+		return "", err
+	}
+
+	container := nuagevsd.createVSDContainerStruct(containerInfo, vsdReq.IPAddress, subnet.ID)
+	containerInterface := container.Interfaces[0].(*vspk.ContainerInterface)
 	var err1 *bambou.Error
 	nuagevsd.makeVSDCall(
 		func() *bambou.Error {
@@ -196,13 +249,46 @@ func (nuagevsd *NuageVSDClient) CreateVSDContainer(vsdReq nuageConfig.NuageEvent
 		log.Errorf("Creating container with UUID %s on VSD failed with error: %v", container.UUID, err1)
 		return "", fmt.Errorf("%v", err1)
 	}
+
 	mask := net.IPMask(net.ParseIP(containerInterface.Netmask).To4())
 	prefixSize, _ := mask.Size()
+	value := &storeValue{
+		VSDID:    container.ID,
+		IntfMAC:  containerInterface.MAC,
+		IntfName: containerInterface.Name,
+		FakeUUID: container.UUID,
+		Mask:     fmt.Sprintf("%d", prefixSize),
+	}
+
+	bytes, err := json.Marshal(value)
+	if err != nil {
+		log.Errorf("Marshalling struct to JSON failed with error: %v", err)
+		return "", err
+	}
+
+	etcdStoreInfo := nuageConfig.NuageEtcdParams{
+		Key:   nuageConfig.MD5Hash(vsdReq.NetworkParams) + "/" + containerInterface.IPAddress,
+		Value: string(bytes),
+	}
+
+	etcdResp := nuageApi.EtcdChanRequest(nuagevsd.etcdChannel, nuageApi.EtcdPutEvent, etcdStoreInfo)
+	if etcdResp.Error != nil {
+		log.Errorf("Putting data into etcd for IP %s failed with error: %v", vsdReq.IPAddress, etcdResp.Error)
+		return "", etcdResp.Error
+	}
 
 	log.Debugf("Container ID = %s created on vsd with ip address = %s", container.UUID, containerInterface.IPAddress)
 	nuagevsd.ipToVSDContainerMap.Write(vsdReq.NetworkParams.String()+"-"+containerInterface.IPAddress,
 		container)
 	return fmt.Sprintf("%s/%d", containerInterface.IPAddress, prefixSize), nil
+}
+
+//CreateVSDContainer creates new container on VSD under the given subnet
+func (nuagevsd *NuageVSDClient) CreateVSDContainer(vsdReq nuageConfig.NuageEventMetadata) (string, error) {
+	if nuagevsd.pluginVersion == "v2" && vsdReq.IPAddress != "" {
+		return nuagevsd.fetchContainerDataEtcd(vsdReq)
+	}
+	return nuagevsd.createVSDContainer(vsdReq)
 }
 
 //DeleteVSDContainer deletes a VSD container with ip in VSD subnet wit id vsdSubnetID

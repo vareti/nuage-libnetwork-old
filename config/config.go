@@ -99,6 +99,13 @@ type NuageLibNetworkConfig struct {
 	VRSSocketFile    string
 	DockerSocketFile string
 	PluginVersion    string
+	EtcdServerURL    string
+}
+
+//NuageEtcdParams contains the key value pair needed by etcd client
+type NuageEtcdParams struct {
+	Key   string
+	Value string
 }
 
 //ReadConfigFile reads, validates and sets defaults to config file

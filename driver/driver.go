@@ -46,6 +46,7 @@ type NuageLibNetworkDriver struct {
 	vsdClient    *client.NuageVSDClient
 	vrsClient    *client.NuageVRSClient
 	dockerClient *client.NuageDockerClient
+	etcdClient   *client.NuageEtcdClient
 	auditRoutine *audit.NuageAudit
 }
 
@@ -112,6 +113,7 @@ func (nuagedriver *NuageLibNetworkDriver) setupModules(channels *nuageApi.NuageL
 	channels.VRSChannel = make(chan *nuageApi.VRSEvent)
 	channels.VSDChannel = make(chan *nuageApi.VSDEvent)
 	channels.DockerChannel = make(chan *nuageApi.DockerEvent)
+	channels.EtcdChannel = make(chan *nuageApi.EtcdEvent)
 	var err error
 	nuagedriver.vrsClient, err = client.NewNuageVRSClient(nuagedriver.config, channels)
 	if err != nil {
@@ -126,6 +128,11 @@ func (nuagedriver *NuageLibNetworkDriver) setupModules(channels *nuageApi.NuageL
 	nuagedriver.dockerClient, err = client.NewNuageDockerClient(nuagedriver.config, channels)
 	if err != nil {
 		log.Errorf("Initializing Docker client failed with error: %v", err)
+		return err
+	}
+	nuagedriver.etcdClient, err = client.NewNuageEtcdClient(nuagedriver.config, channels)
+	if err != nil {
+		log.Errorf("Initializing etcd client failed with error: %v", err)
 		return err
 	}
 	nuagedriver.remoteDriver, err = remote.NewNuageRemoteDriver(nuagedriver.config, channels, remoteServeMux)
@@ -148,6 +155,7 @@ func (nuagedriver *NuageLibNetworkDriver) startModules(ipamServeMux, remoteServe
 	go nuagedriver.vrsClient.Start()
 	go nuagedriver.vsdClient.Start()
 	go nuagedriver.dockerClient.Start()
+	go nuagedriver.etcdClient.Start()
 	if nuagedriver.runAudit {
 		return
 	}

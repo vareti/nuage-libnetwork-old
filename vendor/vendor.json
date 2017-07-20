@@ -15,6 +15,12 @@
 			"revisionTime": "2016-08-01T04:25:05Z"
 		},
 		{
+			"checksumSHA1": "aSEFMBDdNu+yJfbT3FHEDApUBVY=",
+			"path": "github.com/coreos/etcd",
+			"revision": "608df0fc90f0d775ee482dd891bc1f3e96c35d81",
+			"revisionTime": "2017-07-18T23:15:08Z"
+		},
+		{
 			"checksumSHA1": "jZW0YmSE2j+316qebIB/FcrVZ6s=",
 			"path": "github.com/coreos/go-systemd/activation",
 			"revision": "e97b35f834b17eaa82afe3d44715c34736bfa12b",
@@ -63,11 +69,35 @@
 			"revisionTime": "2016-10-18T08:54:36Z"
 		},
 		{
+			"checksumSHA1": "6h5SrXjw94AHlVf6+Y22yaJNvqw=",
+			"path": "golang.org/x/net/http2",
+			"revision": "02ac38e2528ff4adea90f184d71a3faa04b4b1b0",
+			"revisionTime": "2017-07-18T17:12:47Z"
+		},
+		{
+			"checksumSHA1": "sOYolw8BGyeLObXzwLDoVlqquBE=",
+			"path": "golang.org/x/net/http2/hpack",
+			"revision": "02ac38e2528ff4adea90f184d71a3faa04b4b1b0",
+			"revisionTime": "2017-07-18T17:12:47Z"
+		},
+		{
+			"checksumSHA1": "Y/1tCFIBv81KUy1qJKfWnHGx3B4=",
+			"path": "golang.org/x/net/trace",
+			"revision": "02ac38e2528ff4adea90f184d71a3faa04b4b1b0",
+			"revisionTime": "2017-07-18T17:12:47Z"
+		},
+		{
+			"checksumSHA1": "6QTU0HdkJmjR/3SY6pjFn9VBqzM=",
+			"path": "google.golang.org/grpc",
+			"revision": "71260d21715bff9c2ac999d546349d4f4b77ef1d",
+			"revisionTime": "2017-07-18T17:25:36Z"
+		},
+		{
 			"checksumSHA1": "yawc7Ht28nifklkJN95wdGVUsL8=",
 			"path": "gopkg.in/natefinch/lumberjack.v2",
 			"revision": "dd45e6a67c53f673bb49ca8a001fd3a63ceb640e",
 			"revisionTime": "2016-11-04T13:48:45Z"
 		}
 	],
-	"rootPath": "github.com/nuagenetworks/libnetwork-nuage"
+	"rootPath": "github.com/nuagenetworks/nuage-libnetwork"
 }

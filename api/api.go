@@ -57,6 +57,16 @@ const (
 	DockerPoolIDNetworkOptsEvent  DockerEventType = "NETWORKOPTS"
 )
 
+//EtcdEventType defines EtcdEvents
+type EtcdEventType string
+
+//Etcd Event definitions
+const (
+	EtcdPutEvent    EtcdEventType = "PUT"
+	EtcdGetEvent    EtcdEventType = "GET"
+	EtcdDeleteEvent EtcdEventType = "DELETE"
+)
+
 //VRSRespObject is a response object from VRS event
 type VRSRespObject struct {
 	VRSData interface{}
@@ -73,6 +83,12 @@ type VSDRespObject struct {
 type DockerRespObject struct {
 	DockerData interface{}
 	Error      error
+}
+
+//EtcdRespObject is a response object from etcd event
+type EtcdRespObject struct {
+	EtcdData interface{}
+	Error    error
 }
 
 //VRSEvent struct contains data and response to communicate to VRS client
@@ -96,12 +112,20 @@ type DockerEvent struct {
 	DockerRespObjectChan chan *DockerRespObject
 }
 
+//EtcdEvent struct contains data and response to communicate to etcd client
+type EtcdEvent struct {
+	EventType          EtcdEventType
+	EtcdReqObject      interface{}
+	EtcdRespObjectChan chan *EtcdRespObject
+}
+
 //NuageLibNetworkChannels struct contains the channels used for communication
 type NuageLibNetworkChannels struct {
 	Stop          chan bool
 	VRSChannel    chan *VRSEvent
 	VSDChannel    chan *VSDEvent
 	DockerChannel chan *DockerEvent
+	EtcdChannel   chan *EtcdEvent
 }
 
 //VSDChanRequest make a request on VSD Channel
@@ -128,7 +152,7 @@ func VRSChanRequest(receiver chan *VRSEvent, event VRSEventType, params interfac
 	return vrsResp
 }
 
-//DockerChanRequest make a request on VRS Channel
+//DockerChanRequest make a request on docker Channel
 func DockerChanRequest(receiver chan *DockerEvent, event DockerEventType, params interface{}) *DockerRespObject {
 	dockerReq := &DockerEvent{
 		EventType:       event,
@@ -138,4 +162,16 @@ func DockerChanRequest(receiver chan *DockerEvent, event DockerEventType, params
 	receiver <- dockerReq
 	dockerResp := <-dockerReq.DockerRespObjectChan
 	return dockerResp
+}
+
+//EtcdChanRequest make a request on Etcd Channel
+func EtcdChanRequest(receiver chan *EtcdEvent, event EtcdEventType, params interface{}) *EtcdRespObject {
+	etcdReq := &EtcdEvent{
+		EventType:     event,
+		EtcdReqObject: params,
+	}
+	etcdReq.EtcdRespObjectChan = make(chan *EtcdRespObject)
+	receiver <- etcdReq
+	etcdResp := <-etcdReq.EtcdRespObjectChan
+	return etcdResp
 }
