@@ -6,7 +6,7 @@ import (
 	"runtime"
 
 	"github.com/Microsoft/hcsshim"
-	log "github.com/Sirupsen/logrus"
+	log "github.com/sirupsen/logrus"
 	"github.com/docker/libnetwork/drivers/windows"
 )
 

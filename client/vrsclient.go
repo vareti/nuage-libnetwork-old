@@ -19,13 +19,13 @@ package client
 
 import (
 	"fmt"
-	log "github.com/Sirupsen/logrus"
 	"github.com/docker/docker/api/types"
 	vrsSDK "github.com/nuagenetworks/libvrsdk/api"
 	"github.com/nuagenetworks/libvrsdk/api/entity"
 	"github.com/nuagenetworks/libvrsdk/api/port"
 	nuageApi "github.com/nuagenetworks/nuage-libnetwork/api"
 	nuageConfig "github.com/nuagenetworks/nuage-libnetwork/config"
+	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 	"os/exec"
 	"regexp"

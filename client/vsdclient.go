@@ -23,7 +23,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	log "github.com/Sirupsen/logrus"
 	"github.com/docker/docker/api/types"
 	"github.com/mitchellh/mapstructure"
 	"github.com/nuagenetworks/go-bambou/bambou"
@@ -31,6 +30,7 @@ import (
 	nuageConfig "github.com/nuagenetworks/nuage-libnetwork/config"
 	"github.com/nuagenetworks/nuage-libnetwork/utils"
 	"github.com/nuagenetworks/vspk-go/vspk"
+	log "github.com/sirupsen/logrus"
 	"github.com/vishvananda/netlink"
 	"io"
 	"math"
@@ -152,26 +152,13 @@ func (nuagevsd *NuageVSDClient) DeleteVSDObjects(vsdReq *nuageConfig.NuageNetwor
 	return nil
 }
 
-//CreateVSDContainer creates new container on VSD under the given subnet
-func (nuagevsd *NuageVSDClient) CreateVSDContainer(vsdReq nuageConfig.NuageEventMetadata) (string, error) {
-	resp, ok := nuagevsd.nwParamsToVSDObjectsMap.Read(vsdReq.NetworkParams.String())
-	if !ok {
-		return "", fmt.Errorf("Could not find network %s info in cache", vsdReq.NetworkParams.String())
-	}
-	subnet := resp.(*vspk.Subnet)
-
-	containerInfo, err := nuagevsd.populateContainerInfo()
-	if err != nil {
-		log.Errorf("Populating container info failed with error: %v", err)
-		return "", err
-	}
-
+func (nuagevsd *NuageVSDClient) createVSDContainerStruct(containerInfo map[string]string, IPAddress, subnetID string) *vspk.Container {
 	//VSD container interface
 	containerInterface := vspk.NewContainerInterface()
 	containerInterface.Name = containerInfo[nuageConfig.BridgePortKey]
 	containerInterface.MAC = containerInfo[nuageConfig.MACKey]
-	containerInterface.IPAddress = vsdReq.IPAddress
-	containerInterface.AttachedNetworkID = subnet.ID
+	containerInterface.IPAddress = IPAddress
+	containerInterface.AttachedNetworkID = subnetID
 	interfaceList := make([]interface{}, 1)
 	interfaceList[0] = containerInterface
 
@@ -180,8 +167,60 @@ func (nuagevsd *NuageVSDClient) CreateVSDContainer(vsdReq nuageConfig.NuageEvent
 	container.UUID = containerInfo[nuageConfig.UUIDKey]
 	container.Name = containerInfo[nuageConfig.NameKey]
 	container.Interfaces = interfaceList
-	container.ExternalID = nuagevsd.hypervisorID
 
+	return container
+}
+
+func (nuagevsd *NuageVSDClient) fetchContainerDataVSD(vsdReq nuageConfig.NuageEventMetadata) (string, error) {
+	resp, ok := nuagevsd.nwParamsToVSDObjectsMap.Read(vsdReq.NetworkParams.String())
+	if !ok {
+		return "", fmt.Errorf("Could not find network %s info in cache", vsdReq.NetworkParams.String())
+	}
+	subnet := resp.(*vspk.Subnet)
+
+	containerInterfaceFetchingInfo := &bambou.FetchingInfo{Filter: "IPAddress == \"" + vsdReq.IPAddress + "\""}
+	containerInterfacesList, err1 := subnet.ContainerInterfaces(containerInterfaceFetchingInfo)
+	if err1 != nil {
+		log.Errorf("fetching list of container interfaces failed with error: %v", err1)
+		return "", err1
+	}
+	if len(containerInterfacesList) != 1 {
+		return "", fmt.Errorf("Unexpected number(%d) of interfaces for same IP", len(containerInterfacesList))
+	}
+
+	containerInfo := make(map[string]string)
+	containerInfo[nuageConfig.BridgePortKey] = containerInterfacesList[0].Name
+	containerInfo[nuageConfig.MACKey] = containerInterfacesList[0].MAC
+	containerInfo[nuageConfig.UUIDKey] = containerInterfacesList[0].ContainerUUID
+	container := nuagevsd.createVSDContainerStruct(containerInfo, vsdReq.IPAddress, subnet.ID)
+	container.ID = containerInterfacesList[0].ParentID //this is the vsd object id for container. used for deletion
+	mask := net.IPMask(net.ParseIP(containerInterfacesList[0].Netmask).To4())
+	prefixSize, _ := mask.Size()
+
+	log.Debugf("Container ID = %s created on vsd with ip address = %s", container.UUID, vsdReq.IPAddress)
+	nuagevsd.ipToVSDContainerMap.Write(vsdReq.NetworkParams.String()+"-"+vsdReq.IPAddress,
+		container)
+	return fmt.Sprintf("%s/%d", vsdReq.IPAddress, prefixSize), nil
+}
+
+func (nuagevsd *NuageVSDClient) createVSDContainer(vsdReq nuageConfig.NuageEventMetadata) (string, error) {
+	resp, ok := nuagevsd.nwParamsToVSDObjectsMap.Read(vsdReq.NetworkParams.String())
+	if !ok {
+		return "", fmt.Errorf("Could not find network %s info in cache", vsdReq.NetworkParams.String())
+	}
+	subnet := resp.(*vspk.Subnet)
+	containerInfo := make(map[string]string)
+	var err error
+
+	containerInfo, err = nuagevsd.populateContainerInfo()
+	if err != nil {
+		log.Errorf("Populating container info failed with error: %v", err)
+		return "", err
+	}
+
+	container := nuagevsd.createVSDContainerStruct(containerInfo, vsdReq.IPAddress, subnet.ID)
+	container.ExternalID = nuagevsd.hypervisorID
+	containerInterface := container.Interfaces[0].(*vspk.ContainerInterface)
 	var err1 *bambou.Error
 	nuagevsd.makeVSDCall(
 		func() *bambou.Error {
@@ -196,6 +235,7 @@ func (nuagevsd *NuageVSDClient) CreateVSDContainer(vsdReq nuageConfig.NuageEvent
 		log.Errorf("Creating container with UUID %s on VSD failed with error: %v", container.UUID, err1)
 		return "", fmt.Errorf("%v", err1)
 	}
+
 	mask := net.IPMask(net.ParseIP(containerInterface.Netmask).To4())
 	prefixSize, _ := mask.Size()
 
@@ -205,10 +245,27 @@ func (nuagevsd *NuageVSDClient) CreateVSDContainer(vsdReq nuageConfig.NuageEvent
 	return fmt.Sprintf("%s/%d", containerInterface.IPAddress, prefixSize), nil
 }
 
+//CreateVSDContainer creates new container on VSD under the given subnet
+func (nuagevsd *NuageVSDClient) CreateVSDContainer(vsdReq nuageConfig.NuageEventMetadata) (string, error) {
+	dockerResponse := nuageApi.DockerChanRequest(nuagevsd.dockerChannel, nuageApi.DockerIsSwarmEnabled, nil)
+	swarmModeEnabled := dockerResponse.DockerData.(bool)
+	if swarmModeEnabled && vsdReq.IPAddress != "" {
+		return nuagevsd.fetchContainerDataVSD(vsdReq)
+	} else {
+		return nuagevsd.createVSDContainer(vsdReq)
+	}
+}
+
 //DeleteVSDContainer deletes a VSD container with ip in VSD subnet wit id vsdSubnetID
 func (nuagevsd *NuageVSDClient) DeleteVSDContainer(vsdReq nuageConfig.NuageEventMetadata) error {
 	var err *bambou.Error
 
+	dockerResponse := nuageApi.DockerChanRequest(nuagevsd.dockerChannel, nuageApi.DockerIsSwarmManager, nil)
+	isSwarmManager := dockerResponse.DockerData.(bool)
+	dockerResponse = nuageApi.DockerChanRequest(nuagevsd.dockerChannel, nuageApi.DockerIsServiceIP, &vsdReq)
+	isServiceIP := dockerResponse.DockerData.(bool)
+
+	//TODO: If it is gateway IP, then ignore the request
 	container, containerInterface := nuagevsd.getContainerAndInterface(vsdReq)
 	if container == nil || containerInterface == nil {
 		return fmt.Errorf("Failed to find container with ip %s in network %s", vsdReq.IPAddress, vsdReq.NetworkParams.String())
@@ -223,21 +280,27 @@ func (nuagevsd *NuageVSDClient) DeleteVSDContainer(vsdReq nuageConfig.NuageEvent
 		log.Warnf("Finding sequence number for port failed with error: %v", err1)
 	}
 
-	nuagevsd.makeVSDCall(
-		func() *bambou.Error {
-			log.Debugf("Trying to delete container %s on VSD", container.UUID)
-			err = container.Delete()
-			if err != nil {
-				log.Errorf("Deleting container %s failed with error %v", container.UUID, err)
-			}
-			return err
-		}, "deleting container")
-	if err != nil {
-		log.Errorf("deleting container with ID %s on VSD failed with error: %v after all retries", container.ID, err)
+	//if in swarm mode, if manager, can we ignore all IP deletion requests except service IP
+	//if in swarm mode, if manager, then if container is not present locally, fetch it from VSD and then delete it
+	//if in swarm mode, if manager, do not send delete event to vrs
+	if !isSwarmManager || isServiceIP {
+		nuagevsd.makeVSDCall(
+			func() *bambou.Error {
+				log.Debugf("Trying to delete container %s on VSD", container.UUID)
+				err = container.Delete()
+				if err != nil {
+					log.Errorf("Deleting container %s failed with error %v", container.UUID, err)
+				}
+				return err
+			}, "deleting container")
+		if err != nil {
+			log.Errorf("deleting container with ID %s on VSD failed with error: %v after all retries", container.ID, err)
+		}
+		log.Debugf("Deleting container %s succesful", container.UUID)
 	}
-	log.Debugf("Deleting container %s succesful", container.UUID)
-
-	nuageApi.VRSChanRequest(nuagevsd.vrsChannel, nuageApi.VRSDeleteEvent, containerInfo)
+	if !isSwarmManager {
+		nuageApi.VRSChanRequest(nuagevsd.vrsChannel, nuageApi.VRSDeleteEvent, containerInfo)
+	}
 
 	nuagevsd.intfSeqNumTable.Write(string(intfNum), nil)
 
@@ -842,12 +905,20 @@ func (nuagevsd *NuageVSDClient) Start() {
 	nuagevsd.intfSeqNum = nuagevsd.getInitialSequenceNumber()
 	nuagevsd.buildCache()
 
+	go func() {
+		for {
+			select {
+			case <-nuagevsd.connectionRetry:
+				nuagevsd.handleVSDConnection()
+			case <-nuagevsd.stop:
+				return
+			}
+		}
+	}()
 	for {
 		select {
 		case vsdEvent := <-nuagevsd.vsdChannel:
 			nuagevsd.handleVSDEvent(vsdEvent)
-		case <-nuagevsd.connectionRetry:
-			nuagevsd.handleVSDConnection()
 		case vsdReq := <-nuagevsd.infiniteUpdateRetryQueue:
 			err := nuagevsd.UpdateContainerNameUUID(vsdReq)
 			if err != nil {

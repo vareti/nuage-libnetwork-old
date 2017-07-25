@@ -22,8 +22,8 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
-	log "github.com/Sirupsen/logrus"
 	"github.com/docker/docker/pkg/random"
+	log "github.com/sirupsen/logrus"
 	"io"
 	"net"
 	"strconv"
@@ -107,7 +107,7 @@ func GenerateID(crypto bool) string {
 	}
 }
 
-// helper to generateID function
+// helper to GenerateID function
 func truncateID(id string) string {
 	shortLen := 12
 	trimTo := shortLen

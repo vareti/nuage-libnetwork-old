@@ -55,6 +55,9 @@ const (
 	DockerNetworkIDInspectEvent   DockerEventType = "NETWORKINSPECT"
 	DockerNetworkConnectEvent     DockerEventType = "NETWORKCONNECT"
 	DockerPoolIDNetworkOptsEvent  DockerEventType = "NETWORKOPTS"
+	DockerIsSwarmEnabled          DockerEventType = "ISSWARMENABLED"
+	DockerIsSwarmManager          DockerEventType = "ISSWARMMANAGER"
+	DockerIsServiceIP             DockerEventType = "ISSERVICEIP"
 )
 
 //VRSRespObject is a response object from VRS event

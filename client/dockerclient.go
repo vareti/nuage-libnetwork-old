@@ -19,19 +19,21 @@ package client
 
 import (
 	"fmt"
-	log "github.com/Sirupsen/logrus"
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/events"
 	"github.com/docker/docker/api/types/filters"
+	"github.com/docker/docker/api/types/swarm"
 	dockerClient "github.com/docker/docker/client"
 	nuageApi "github.com/nuagenetworks/nuage-libnetwork/api"
 	nuageConfig "github.com/nuagenetworks/nuage-libnetwork/config"
 	"github.com/nuagenetworks/nuage-libnetwork/utils"
+	log "github.com/sirupsen/logrus"
 	"golang.org/x/net/context"
 	"net"
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -45,7 +47,9 @@ type NuageDockerClient struct {
 	dockerChannel      chan *nuageApi.DockerEvent
 	vsdChannel         chan *nuageApi.VSDEvent
 	networkParamsTable *utils.HashMap
+	serviceIPCache     *utils.HashMap
 	pluginVersion      string
+	sync.Mutex
 }
 
 //NewNuageDockerClient creates a new docker client
@@ -58,6 +62,7 @@ func NewNuageDockerClient(config *nuageConfig.NuageLibNetworkConfig, channels *n
 	nuagedocker.connectionRetry = make(chan bool)
 	nuagedocker.connectionActive = make(chan bool)
 	nuagedocker.networkParamsTable = utils.NewHashMap()
+	nuagedocker.serviceIPCache = utils.NewHashMap()
 	nuagedocker.pluginVersion = config.PluginVersion
 	nuagedocker.socketFile = config.DockerSocketFile
 	nuagedocker.dclient, err = connectToDockerDaemon(nuagedocker.socketFile)
@@ -150,7 +155,7 @@ func (nuagedocker *NuageDockerClient) GetNetworkOptsFromNetworkID(networkID stri
 
 	nuagedocker.executeDockerCommand(
 		func() error {
-			networkInspect, err = nuagedocker.dclient.NetworkInspect(context.Background(), networkID)
+			networkInspect, err = nuagedocker.dclient.NetworkInspect(context.Background(), networkID, types.NetworkInspectOptions{})
 			return err
 		})
 	if err != nil {
@@ -215,6 +220,92 @@ func (nuagedocker *NuageDockerClient) GetNetworkConnectEvents() {
 	}
 }
 
+//isSwarmEnabled checks if the docker swarm is enabled on current node
+func (nuagedocker *NuageDockerClient) isSwarmEnabled() (bool, error) {
+	info, err := nuagedocker.dclient.Info(context.Background())
+	if err != nil {
+		log.Errorf("(IsSwarmEnabled)Fetching docker node info for this node failed: %v", err)
+		return false, err
+	}
+	if info.Swarm.LocalNodeState == swarm.LocalNodeStateActive {
+		return true, nil
+	}
+	return false, nil
+}
+
+//isSwarmManager check if the current swarm node is manager
+func (nuagedocker *NuageDockerClient) isSwarmManager() (bool, error) {
+	info, err := nuagedocker.dclient.Info(context.Background())
+	if err != nil {
+		log.Errorf("(IsSwarmManager)Fetching docker node info for this node failed: %v", err)
+		return false, err
+	}
+	if info.Swarm.LocalNodeState != swarm.LocalNodeStateActive {
+		return false, fmt.Errorf("Swarm is not enabled on this node")
+	}
+	return info.Swarm.ControlAvailable, nil
+}
+
+func (nuagedocker *NuageDockerClient) buildServiceIPCache() {
+	manager, err := nuagedocker.isSwarmManager()
+	if manager && err == nil {
+		//need another level of mutex as we are accessing map of map
+		nuagedocker.Lock()
+		defer nuagedocker.Unlock()
+		// clear the cache
+		for _, id := range nuagedocker.serviceIPCache.GetKeys() {
+			nuagedocker.serviceIPCache.Write(id, nil)
+		}
+
+		services, err := nuagedocker.dclient.ServiceList(context.Background(), types.ServiceListOptions{})
+		if err != nil {
+			log.Errorf("Fetching list of services from docker daemon failed with error: %v", err)
+			return
+		}
+
+		for _, service := range services {
+			for _, vip := range service.Endpoint.VirtualIPs {
+				if vip.Addr == "" {
+					continue
+				}
+				var serviceIPMap map[string]bool
+				serviceIPMapInterface, exists := nuagedocker.serviceIPCache.Read(vip.NetworkID)
+				if exists {
+					serviceIPMap = serviceIPMapInterface.(map[string]bool)
+				} else {
+					serviceIPMap = make(map[string]bool)
+				}
+				serviceIPMap[vip.Addr] = true
+				var networkOpts *nuageConfig.NuageNetworkParams
+				networkOptsIntf, inCache := nuagedocker.networkParamsTable.Read(vip.NetworkID)
+				if !inCache {
+					networkOpts, err = nuagedocker.GetNetworkOptsFromNetworkID(vip.NetworkID)
+					if err != nil {
+						log.Errorf("Fetching network opts from network ID failed with error: %v", err)
+						return
+					}
+				} else {
+					networkOpts = networkOptsIntf.(*nuageConfig.NuageNetworkParams)
+				}
+				nuagedocker.serviceIPCache.Write(nuageConfig.MD5Hash(networkOpts), serviceIPMap)
+			}
+		}
+	}
+	time.AfterFunc(30*time.Second, func() { nuagedocker.buildServiceIPCache() })
+}
+
+func (nuagedocker *NuageDockerClient) isServiceIP(vsdReq *nuageConfig.NuageEventMetadata) bool {
+	nuagedocker.Lock()
+	defer nuagedocker.Unlock()
+	serviceIPMapIntf, exists := nuagedocker.serviceIPCache.Read(nuageConfig.MD5Hash(vsdReq.NetworkParams))
+	if !exists {
+		return false
+	}
+	serviceIPMap := serviceIPMapIntf.(map[string]bool)
+	_, exists = serviceIPMap[vsdReq.IPAddress]
+	return exists
+}
+
 func (nuagedocker *NuageDockerClient) GetOptsAllNetworks() (map[string]*nuageConfig.NuageNetworkParams, error) {
 	table := make(map[string]*nuageConfig.NuageNetworkParams)
 	for _, networkID := range nuagedocker.networkParamsTable.GetKeys() {
@@ -226,7 +317,7 @@ func (nuagedocker *NuageDockerClient) GetOptsAllNetworks() (map[string]*nuageCon
 	return table, nil
 }
 
-func (nuagedocker *NuageDockerClient) buildCache() {
+func (nuagedocker *NuageDockerClient) buildNetworkInfoCache() {
 	networkList, err := nuagedocker.dockerNetworkList()
 	if err != nil {
 		log.Errorf("Fetching network list from docker failed with error %v", err)
@@ -331,7 +422,8 @@ func checkEnvVar(key string, envVars []string) (string, bool) {
 func (nuagedocker *NuageDockerClient) Start() {
 	log.Infof("Starting docker client")
 
-	nuagedocker.buildCache()
+	nuagedocker.buildNetworkInfoCache()
+	nuagedocker.buildServiceIPCache()
 
 	go nuagedocker.GetNetworkConnectEvents()
 
@@ -369,6 +461,18 @@ func (nuagedocker *NuageDockerClient) handleDockerEvent(event *nuageApi.DockerEv
 	case nuageApi.DockerGetOptsAllNetworksEvent:
 		networkParamsTable, err := nuagedocker.GetOptsAllNetworks()
 		event.DockerRespObjectChan <- &nuageApi.DockerRespObject{DockerData: networkParamsTable, Error: err}
+
+	case nuageApi.DockerIsSwarmEnabled:
+		isSwarmEnabled, err := nuagedocker.isSwarmEnabled()
+		event.DockerRespObjectChan <- &nuageApi.DockerRespObject{DockerData: isSwarmEnabled, Error: err}
+
+	case nuageApi.DockerIsSwarmManager:
+		isSwarmManager, err := nuagedocker.isSwarmManager()
+		event.DockerRespObjectChan <- &nuageApi.DockerRespObject{DockerData: isSwarmManager, Error: err}
+
+	case nuageApi.DockerIsServiceIP:
+		isServiceIP := nuagedocker.isServiceIP(event.DockerReqObject.(*nuageConfig.NuageEventMetadata))
+		event.DockerRespObjectChan <- &nuageApi.DockerRespObject{DockerData: isServiceIP}
 
 	default:
 		log.Errorf("NuageDockerClient: unknown api invocation")
